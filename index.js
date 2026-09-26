@@ -22,26 +22,27 @@ export default async function handler(req, res) {
   try {
     const response = await fetch(targetUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept-Language': 'en-US,en;q=0.9',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Cache-Control': 'no-cache'
       }
     });
 
     if (!response.ok) {
-      return res.status(200).json({ counters: [], source: targetUrl, error: 'Héroe no encontrado en MLBB Hub' });
+      return res.status(200).json({ counters: [], source: targetUrl, error: 'Héroe no encontrado' });
     }
 
     const html = await response.text();
     const counters = [];
-
-    const regex = /href="\/counter\/([a-z0-9-]+)"[^>]*>[\s\S]*?<div[^>]*>([^<]+)<\/div>/gi;
-    let match;
     const seen = new Set();
 
+    // Expresión regular flexible para capturar enlaces a /counter/nombre-del-heroe
+    const regex = /href=["'](?:\/counter\/|https?:\/\/mlbbhub\.com\/counter\/)([a-z0-9-]+)["']/gi;
+    let match;
+
     while ((match = regex.exec(html)) !== null) {
-      let heroSlug = match[1];
-      let winRate = match[2].trim();
+      let heroSlug = match[1].toLowerCase();
 
       if (heroSlug !== formattedHero && !seen.has(heroSlug)) {
         seen.add(heroSlug);
@@ -49,10 +50,10 @@ export default async function handler(req, res) {
         
         counters.push({
           name: cleanName,
-          winRate: winRate || 'Ventaja confirmada'
+          winRate: 'Ventaja confirmada'
         });
 
-        if (counters.length >= 5) break;
+        if (counters.length >= 6) break;
       }
     }
 
