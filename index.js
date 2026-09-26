@@ -1,64 +1,64 @@
-const express = require('express');
-const axios = require('axios');
-const cheerio = require('cheerio');
-const cors = require('cors');
+export default async function handler(req, res) {
+  // Configuración de cabeceras CORS
+  res.setHeader('Access-Control-Allow-Credentials', true);
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
 
-const app = express();
-app.use(cors()); // Habilita CORS para que GitHub Pages pueda consultar la API
-
-app.get('/api/counter', async (req, res) => {
-  const hero = req.query.hero;
-  if (!hero) {
-    return res.status(400).json({ error: 'Debes proporcionar un nombre de héroe.' });
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
   }
 
-  const heroSlug = hero.toLowerCase().trim().replace(/\s+/g, '-');
-  const targetUrl = `https://mlbbhub.com/counter/${heroSlug}`;
+  const { hero } = req.query;
+
+  if (!hero) {
+    return res.status(400).json({ error: 'Debes proporcionar un nombre de héroe' });
+  }
+
+  const formattedHero = hero.toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+  const targetUrl = `https://mlbbhub.com/counter/${formattedHero}`;
 
   try {
-    const { data } = await axios.get(targetUrl, {
+    const response = await fetch(targetUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
       }
     });
 
-    const $ = cheerio.load(data);
-    const counters = [];
-
-    // Extrae los nombres y detalles de los counters desde la estructura de MLBB Hub
-    $('.counter-card, .hero-card, .counter-item').each((index, element) => {
-      const name = $(element).find('.hero-name, .name, h3').text().trim();
-      const winRate = $(element).find('.win-rate, .stat-value').text().trim();
-
-      if (name && counters.length < 5) {
-        counters.push({ name, winRate: winRate || 'N/A' });
-      }
-    });
-
-    // Respuesta fallback si la estructura HTML varía ligeramente
-    if (counters.length === 0) {
-      return res.json({
-        hero: heroSlug,
-        source: targetUrl,
-        counters: [],
-        message: 'No se pudieron extraer automáticamente los datos directos, pero puedes consultar la fuente original.'
-      });
+    if (!response.ok) {
+      return res.status(200).json({ counters: [], source: targetUrl, error: 'Héroe no encontrado en MLBB Hub' });
     }
 
-    res.json({
-      hero: heroSlug,
-      source: targetUrl,
-      counters: counters
-    });
+    const html = await response.text();
+    const counters = [];
+
+    const regex = /href="\/counter\/([a-z0-9-]+)"[^>]*>[\s\S]*?<div[^>]*>([^<]+)<\/div>/gi;
+    let match;
+    const seen = new Set();
+
+    while ((match = regex.exec(html)) !== null) {
+      let heroSlug = match[1];
+      let winRate = match[2].trim();
+
+      if (heroSlug !== formattedHero && !seen.has(heroSlug)) {
+        seen.add(heroSlug);
+        let cleanName = heroSlug.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+        
+        counters.push({
+          name: cleanName,
+          winRate: winRate || 'Ventaja confirmada'
+        });
+
+        if (counters.length >= 5) break;
+      }
+    }
+
+    return res.status(200).json({ counters, source: targetUrl });
 
   } catch (error) {
-    res.status(500).json({
-      error: 'Error al consultar MLBB Hub.',
-      source: targetUrl,
-      details: error.message
-    });
+    return res.status(500).json({ error: 'Error al consultar datos', details: error.message });
   }
-});
-
-const PORT = process.env.PORT || 3000;
-module.exports = app;
+}
