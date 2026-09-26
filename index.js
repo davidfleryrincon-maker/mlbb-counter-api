@@ -13,7 +13,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  const { hero } = req.query;
+  const { hero, lane } = req.query;
 
   if (!hero) {
     return res.status(400).json({ error: 'Debes proporcionar un nombre de héroe' });
@@ -33,7 +33,7 @@ export default async function handler(req, res) {
     });
 
     if (!response.ok) {
-      return res.status(200).json({ counters: [], source: targetUrl, error: 'Héroe no encontrado' });
+      return res.status(200).json({ counters: [], source: targetUrl, lane: lane || 'all', error: 'Héroe no encontrado' });
     }
 
     const html = await response.text();
@@ -55,11 +55,12 @@ export default async function handler(req, res) {
           winRate: 'Ventaja confirmada'
         });
 
-        if (counters.length >= 6) break;
+        // Extraemos un pool suficiente para que el frontend pueda filtrar los héroes de la línea elegida
+        if (counters.length >= 15) break;
       }
     }
 
-    return res.status(200).json({ counters, source: targetUrl });
+    return res.status(200).json({ counters, source: targetUrl, lane: lane || 'all' });
 
   } catch (error) {
     return res.status(500).json({ error: 'Error al consultar datos', details: error.message });
