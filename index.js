@@ -61,4 +61,4 @@ app.get('/api/counter', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Servidor API corriendo en el puerto ${PORT}`));
+module.exports = app;
