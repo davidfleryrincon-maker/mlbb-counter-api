@@ -13,10 +13,11 @@ export default async function handler(req, res) {
     const heroInput = req.query.hero || 'miya';
     const laneInput = (req.query.lane || 'gold').toLowerCase().trim();
 
+    // Normalizar slug del héroe (ej. "hirara" -> "hirara", "popol and kupa" -> "popol-and-kupa")
     const heroSlug = heroInput.toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
     const url = `https://mlbbhub.com/counter/${heroSlug}`;
 
-    // 1. MATRIZ ESTRICTA DE LÍNEAS / ROLES EN MOBILE LEGENDS
+    // 1. BASE DE DATOS DE LÍNEAS (Incluyendo héroes recientes como Hirara, Suyou, Zhuxin, Cici, Nolan, Chip, etc.)
     const LANE_ROSTER = {
       gold: [
         "Beatrix", "Brody", "Clint", "Bruno", "Wanwan", "Lesley", "Irithel", 
@@ -26,7 +27,8 @@ export default async function handler(req, res) {
       exp: [
         "Terizla", "Yu Zhong", "Lapu-Lapu", "Paquito", "Chou", "Ruby", "Dyrroth", 
         "Thamuz", "Khaleed", "Arlott", "Cici", "Phoveus", "Alpha", "Edith", 
-        "Esmeralda", "Uranus", "Badang", "Argus", "Sun", "Zilong", "Benedetta", "Gatotkaca", "Masha"
+        "Esmeralda", "Uranus", "Badang", "Argus", "Sun", "Zilong", "Benedetta", 
+        "Gatotkaca", "Masha", "Joy"
       ],
       mid: [
         "Pharsa", "Kagura", "Lylia", "Lunox", "Yve", "Valentina", "Xavier", 
@@ -34,18 +36,23 @@ export default async function handler(req, res) {
         "Gord", "Chang'e", "Cyclops", "Nana", "Odette", "Vexana", "Zhask", "Kadita"
       ],
       jungle: [
-        "Fanny", "Hayabusa", "Ling", "Lancelot", "Gusion", "Nolan", "Baxia", 
-        "Fredrinn", "Barats", "Martis", "Alpha", "Aamon", "Saber", "Helcurt", 
-        "Karina", "Alucard", "Yi Sun-shin", "Harley", "Julian", "Suyou"
+        "Hirara", "Suyou", "Nolan", "Joy", "Fanny", "Hayabusa", "Ling", "Lancelot", 
+        "Gusion", "Baxia", "Fredrinn", "Barats", "Martis", "Alpha", "Aamon", 
+        "Saber", "Helcurt", "Karina", "Alucard", "Yi Sun-shin", "Harley", "Julian"
       ],
       roam: [
-        "Tigreal", "Minotauro", "Minotaur", "Khufra", "Atlas", "Franco", "Akai", 
-        "Gloo", "Grock", "Hylos", "Belerick", "Gatotkaca", "Lolita", "Angela", 
-        "Estes", "Floryn", "Rafaela", "Mathilda", "Diggie", "Kaja", "Carmilla", "Chip", "Marcel"
+        "Chip", "Minotauro", "Minotaur", "Tigreal", "Khufra", "Atlas", "Franco", 
+        "Akai", "Gloo", "Grock", "Hylos", "Belerick", "Gatotkaca", "Lolita", 
+        "Angela", "Estes", "Floryn", "Rafaela", "Mathilda", "Diggie", "Kaja", "Carmilla"
       ]
     };
 
-    // 2. PETICIÓN A MLBB HUB
+    // Crear un conjunto global de todos los héroes conocidos en la matriz
+    const ALL_KNOWN_HEROES = new Set(
+      Object.values(LANE_ROSTER).flat().map(h => h.toLowerCase())
+    );
+
+    // 2. PETICIÓN DE DATOS A MLBB HUB
     const response = await fetch(url, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
@@ -58,38 +65,49 @@ export default async function handler(req, res) {
       const html = await response.text();
       const $ = load(html);
 
-      // Extraer héroes sugeridos en el HTML
+      // Extraer enlaces de héroes
       $('a[href*="/counter/"], a[href*="/hero/"]').each((_, el) => {
         const href = $(el).attr('href') || '';
         const slug = href.split('/').filter(Boolean).pop()?.toLowerCase();
         
-        if (slug && slug !== heroSlug && slug.length > 2) {
+        const blacklist = ['counter', 'hero', heroSlug, 'tier-list', 'guides', 'privacy', 'terms'];
+
+        if (slug && !blacklist.includes(slug) && slug.length > 2) {
           const cleanName = slug.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-          if (!scrapedHeroes.includes(cleanName)) {
+          if (!scrapedHeroes.some(h => h.toLowerCase() === cleanName.toLowerCase())) {
             scrapedHeroes.push(cleanName);
           }
         }
       });
     }
 
-    // 3. FILTRADO ESTRICTO POR LÍNEA SELECCIONADA
+    // 3. FILTRADO INTELIGENTE
     const validHeroesForLane = LANE_ROSTER[laneInput] || LANE_ROSTER.gold;
 
-    // Filtramos los héroes obtenidos para dejar ÚNICAMENTE los que pertenecen a esa línea
-    let finalCounters = scrapedHeroes.filter(heroName => 
-      validHeroesForLane.some(valid => valid.toLowerCase() === heroName.toLowerCase())
-    );
+    let finalCounters = scrapedHeroes.filter(heroName => {
+      const lowerName = heroName.toLowerCase();
+      
+      // Regla A: Si el héroe está asignado a la línea seleccionada en nuestra base de datos, pasa.
+      const isAssignedToLane = validHeroesForLane.some(valid => valid.toLowerCase() === lowerName);
+      if (isAssignedToLane) return true;
 
-    // Si el raspado no trajo héroes válidos para esa línea, usamos la lista de respaldo de esa línea exacta
+      // Regla B: Si es un héroe NUEVO (no está registrado en ninguna otra línea de nuestra matriz),
+      // lo dejamos pasar dinámicamente para no bloquear personajes nuevos como Hirara.
+      const isNewUnknownHero = !ALL_KNOWN_HEROES.has(lowerName);
+      if (isNewUnknownHero) return true;
+
+      return false;
+    });
+
+    // Respaldar con la lista predeterminada de la línea si no se encontraron héroes
     if (finalCounters.length === 0) {
       finalCounters = validHeroesForLane;
     }
 
-    // Estructurar la respuesta
     const formattedResult = finalCounters.slice(0, 5).map(name => ({
       name: name,
       slug: name.toLowerCase().replace(/\s+/g, '-'),
-      winRate: `Counter verificado para ${laneInput.toUpperCase()}`
+      winRate: `Counter para ${laneInput.toUpperCase()}`
     }));
 
     return res.status(200).json({
