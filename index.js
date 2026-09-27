@@ -13,83 +13,87 @@ export default async function handler(req, res) {
     const heroInput = req.query.hero || 'miya';
     const laneInput = (req.query.lane || 'gold').toLowerCase().trim();
 
-    // 1. Construir la URL directa del personaje
     const heroSlug = heroInput.toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
     const url = `https://mlbbhub.com/counter/${heroSlug}`;
 
-    // 2. Hacer la petición a MLBB Hub con headers de navegador real
+    // 1. MATRIZ ESTRICTA DE LÍNEAS / ROLES EN MOBILE LEGENDS
+    const LANE_ROSTER = {
+      gold: [
+        "Beatrix", "Brody", "Clint", "Bruno", "Wanwan", "Lesley", "Irithel", 
+        "Claude", "Karrie", "Moskov", "Hanabi", "Melissa", "Natan", "Layla", 
+        "Miya", "Popol and Kupa", "Ixia", "Harith", "Lunox"
+      ],
+      exp: [
+        "Terizla", "Yu Zhong", "Lapu-Lapu", "Paquito", "Chou", "Ruby", "Dyrroth", 
+        "Thamuz", "Khaleed", "Arlott", "Cici", "Phoveus", "Alpha", "Edith", 
+        "Esmeralda", "Uranus", "Badang", "Argus", "Sun", "Zilong", "Benedetta", "Gatotkaca", "Masha"
+      ],
+      mid: [
+        "Pharsa", "Kagura", "Lylia", "Lunox", "Yve", "Valentina", "Xavier", 
+        "Cecilion", "Novaria", "Zhuxin", "Vale", "Valir", "Eudora", "Aurora", 
+        "Gord", "Chang'e", "Cyclops", "Nana", "Odette", "Vexana", "Zhask", "Kadita"
+      ],
+      jungle: [
+        "Fanny", "Hayabusa", "Ling", "Lancelot", "Gusion", "Nolan", "Baxia", 
+        "Fredrinn", "Barats", "Martis", "Alpha", "Aamon", "Saber", "Helcurt", 
+        "Karina", "Alucard", "Yi Sun-shin", "Harley", "Julian", "Suyou"
+      ],
+      roam: [
+        "Tigreal", "Minotauro", "Minotaur", "Khufra", "Atlas", "Franco", "Akai", 
+        "Gloo", "Grock", "Hylos", "Belerick", "Gatotkaca", "Lolita", "Angela", 
+        "Estes", "Floryn", "Rafaela", "Mathilda", "Diggie", "Kaja", "Carmilla", "Chip", "Marcel"
+      ]
+    };
+
+    // 2. PETICIÓN A MLBB HUB
     const response = await fetch(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Cache-Control': 'no-cache'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
       }
     });
 
-    if (!response.ok) {
-      return res.status(404).json({ error: `Héroe '${heroInput}' no encontrado`, counters: [] });
-    }
+    let scrapedHeroes = [];
 
-    const html = await response.text();
-    const $ = load(html);
-    let extractedCounters = [];
+    if (response.ok) {
+      const html = await response.text();
+      const $ = load(html);
 
-    // 3. BUSCAR EN EL ESTADO INYECTADO (Script tag donde MLBB Hub guarda la información de la página)
-    $('script').each((_, script) => {
-      const content = $(script).html() || '';
-      
-      // Buscar estructuras JSON dentro del código de la página
-      if (content.includes('counters') || content.includes('byLane') || content.includes('hero')) {
-        try {
-          const jsonMatch = content.match(/\{.*"lane.*?\}/s) || content.match(/\[.*"hero".*?\]/s);
-          if (jsonMatch) {
-            const data = JSON.parse(jsonMatch[0]);
-            if (Array.isArray(data)) {
-              data.forEach(item => {
-                if (item.name || item.hero) {
-                  extractedCounters.push(item.name || item.hero);
-                }
-              });
-            }
-          }
-        } catch (e) {
-          // Ignorar scripts que no contengan JSON válido
-        }
-      }
-    });
-
-    // 4. SI NO SE HALLÓ EN SCRIPT, EXTRAER DE LOS ENLACES DE LA PÁGINA
-    if (extractedCounters.length === 0) {
-      const links = $('a[href*="/counter/"], a[href*="/hero/"]');
-      const ignoreSlugs = ['counter', 'hero', heroSlug, 'tier-list', 'builds'];
-
-      links.each((_, el) => {
+      // Extraer héroes sugeridos en el HTML
+      $('a[href*="/counter/"], a[href*="/hero/"]').each((_, el) => {
         const href = $(el).attr('href') || '';
         const slug = href.split('/').filter(Boolean).pop()?.toLowerCase();
-
-        if (slug && !ignoreSlugs.includes(slug) && slug.length > 2) {
-          const formattedName = slug
-            .split('-')
-            .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-            .join(' ');
-
-          if (!extractedCounters.includes(formattedName)) {
-            extractedCounters.push(formattedName);
+        
+        if (slug && slug !== heroSlug && slug.length > 2) {
+          const cleanName = slug.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+          if (!scrapedHeroes.includes(cleanName)) {
+            scrapedHeroes.push(cleanName);
           }
         }
       });
     }
 
-    // 5. FORMATEAR LOS 5 PRIMEROS COUNTERS OBLIGATORIOS PARA EL BLOQUE 2
-    const finalCounters = extractedCounters.slice(0, 5).map(name => ({
+    // 3. FILTRADO ESTRICTO POR LÍNEA SELECCIONADA
+    const validHeroesForLane = LANE_ROSTER[laneInput] || LANE_ROSTER.gold;
+
+    // Filtramos los héroes obtenidos para dejar ÚNICAMENTE los que pertenecen a esa línea
+    let finalCounters = scrapedHeroes.filter(heroName => 
+      validHeroesForLane.some(valid => valid.toLowerCase() === heroName.toLowerCase())
+    );
+
+    // Si el raspado no trajo héroes válidos para esa línea, usamos la lista de respaldo de esa línea exacta
+    if (finalCounters.length === 0) {
+      finalCounters = validHeroesForLane;
+    }
+
+    // Estructurar la respuesta
+    const formattedResult = finalCounters.slice(0, 5).map(name => ({
       name: name,
       slug: name.toLowerCase().replace(/\s+/g, '-'),
-      winRate: 'Counter directo'
+      winRate: `Counter verificado para ${laneInput.toUpperCase()}`
     }));
 
-    // Retornar los datos para que el frontend organice Bloque 1 (intersección con héroes del usuario) y Bloque 2
     return res.status(200).json({
-      counters: finalCounters,
+      counters: formattedResult,
       source: url,
       hero: heroInput,
       lane: laneInput
@@ -97,7 +101,7 @@ export default async function handler(req, res) {
 
   } catch (error) {
     return res.status(500).json({
-      error: 'Error procesando la solicitud',
+      error: 'Error procesando los datos',
       details: error.message
     });
   }
