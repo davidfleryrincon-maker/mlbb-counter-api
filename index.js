@@ -52,11 +52,12 @@ export default async function handler(req, res) {
         
         counters.push({
           name: cleanName,
+          slug: heroSlug,
           winRate: 'Ventaja confirmada'
         });
 
-        // Extraemos un pool suficiente para que el frontend pueda filtrar los héroes de la línea elegida
-        if (counters.length >= 15) break;
+        // Extraemos hasta 30 héroes para asegurar que el frontend tenga un pool amplio al filtrar por línea
+        if (counters.length >= 30) break;
       }
     }
 
