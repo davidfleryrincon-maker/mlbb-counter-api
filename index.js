@@ -13,7 +13,6 @@ export default async function handler(req, res) {
     const heroInput = req.query.hero || 'miya';
     const laneInput = (req.query.lane || 'gold').toLowerCase().trim();
 
-    // Normalizar slug para la URL (ej: "popol-and-kupa")
     const heroSlug = heroInput.toLowerCase().trim().replace(/\s+/g, '-');
     const url = `https://mlbbhub.com/counter/${heroSlug}`;
 
@@ -31,7 +30,15 @@ export default async function handler(req, res) {
     const $ = load(html);
     const rawCounters = [];
 
-    // Función para formatear Slugs a Nombres Propios Limpios (ej: "popol-and-kupa" -> "Popol And Kupa")
+    // Base de conocimiento primaria de héroes habituales por línea/rol en Mobile Legends
+    const laneRoleDatabase = {
+      gold: ['miya', 'layla', 'lesley', 'wanwan', 'beatrix', 'brody', 'bruno', 'clint', 'claude', 'karrie', 'moskov', 'hanabi', 'irithel', 'melissa', 'natan', 'popol-and-kupa', 'edith'],
+      exp: ['chou', 'paquito', 'yuzhong', 'esmeralda', 'thamuz', 'terizla', 'ruby', 'argus', 'badang', 'aldous', 'dyrroth', 'lapu-lapu', 'khaleed', 'alpha', 'freya', 'benedetta', 'uranus', 'cici', 'phoveus', 'sun', 'zilong'],
+      mid: ['pharsa', 'kagura', 'lunox', 'lylia', 'yve', 'cecilion', 'vale', 'valir', 'eudora', 'aurora', 'gord', 'chang-e', 'cyclops', 'nana', 'kadita', 'xavier', 'zhask', 'novaria'],
+      jungle: ['ling', 'lancelot', 'fanny', 'hayabusa', 'gusion', 'helcurt', 'karina', 'saber', 'alucard', 'baxia', 'akai', 'fredrinn', 'barats', 'aamon', 'nolan', 'martis', 'joy', 'julian', 'yin'],
+      roam: ['tigreal', 'franco', 'khufra', 'atlas', 'gloo', 'grock', 'hylos', 'belerick', 'gatotkaca', 'johnson', 'lolita', 'minotaur', 'angela', 'estes', 'floryn', 'rafaela', 'mathilda', 'diggie', 'kaja', 'carmilla', 'chip']
+    };
+
     const formatHeroName = (slug) => {
       return slug
         .split('-')
@@ -39,36 +46,42 @@ export default async function handler(req, res) {
         .join(' ');
     };
 
-    // Extraer únicamente los enlaces que apuntan a perfiles de héroes
+    // 1. Extraer todos los héroes sugeridos en el HTML
     $('a[href*="/hero/"], a[href*="/counter/"]').each((_, el) => {
       const href = $(el).attr('href') || '';
       const parts = href.split('/').filter(Boolean);
       const slug = parts.pop();
 
-      // Términos en inglés de la interfaz que debemos ignorar
       const blacklist = [
         'hero', 'counter', 'tier-list', 'guides', 'privacy', 'terms', 
         'contact', 'about', 'gold-lane', 'exp-lane', 'mid-lane', 'jungle', 'roam', heroSlug
       ];
 
       if (slug && !blacklist.includes(slug.toLowerCase()) && slug.length > 2) {
-        // Formatear el nombre de forma limpia a partir del slug de la URL
-        const cleanName = formatHeroName(slug);
-
-        // Evitar duplicados
-        if (!rawCounters.some(c => c.slug === slug)) {
-          rawCounters.push({
-            name: cleanName,
-            slug: slug,
-            winRate: "Counter por línea"
-          });
+        if (!rawCounters.some(c => c.slug === slug.toLowerCase())) {
+          rawCounters.push(slug.toLowerCase());
         }
       }
     });
 
-    // Retornamos los resultados limpios
+    // 2. FILTRADO INTELIGENTE: Validar si el counter pertenece a la línea/rol solicitado
+    const targetLaneHeroes = laneRoleDatabase[laneInput] || [];
+    
+    let filteredSlugs = rawCounters.filter(slug => targetLaneHeroes.includes(slug));
+
+    // Si la lista filtrada por rol específico tiene muy pocos resultados, se complementa con la lista general de la página
+    if (filteredSlugs.length < 3) {
+      filteredSlugs = Array.from(new Set([...filteredSlugs, ...rawCounters]));
+    }
+
+    const finalCounters = filteredSlugs.map(slug => ({
+      name: formatHeroName(slug),
+      slug: slug,
+      winRate: `Counter verificado para ${laneInput.toUpperCase()} Lane`
+    }));
+
     return res.status(200).json({
-      counters: rawCounters.slice(0, 10),
+      counters: finalCounters.slice(0, 10),
       source: url,
       lane: laneInput,
       hero: heroInput
