@@ -18,7 +18,7 @@ const OFFICIAL_HEROES = [
 
 const HERO_LOOKUP = new Map(OFFICIAL_HEROES.map(h => [h.toLowerCase(), h]));
 
-// Mapeo oficial de héroes permitidos por cada línea (usado SOLO para filtrar el resultado final)
+// Mapeo oficial por línea (el orden importa para forzar prioridad de línea)
 const HEROES_BY_LANE = {
   jungle: [
     "Lukas", "Barats", "Baxia", "Fredrinn", "Akai", "Hayabusa", "Ling", "Suyou", "Alpha",
@@ -108,24 +108,30 @@ module.exports = async (req, res) => {
     const $ = cheerio.load(response.data);
     let extractedCounters = [];
 
-    // 1. Extraer todos los candidatos a counter desde la estructura del sitio
     const nextDataScript = $('#__NEXT_DATA__').html();
     
     if (nextDataScript) {
       try {
         const nextData = JSON.parse(nextDataScript);
-        
-        const extractDirect = (node) => {
-          if (!node || typeof node !== 'object') return;
+        const pageProps = nextData?.props?.pageProps;
 
+        // Intentar buscar específicamente el objeto o array de "By Lane and Role"
+        let laneDataNode = null;
+
+        if (pageProps) {
+          // Buscar en las propiedades habituales de la API de MLBB Hub
+          laneDataNode = pageProps.byLane || pageProps.laneCounters || pageProps.roleCounters || pageProps.roles || pageProps.lanes;
+        }
+
+        const extractFromObj = (node) => {
+          if (!node || typeof node !== 'object') return;
           if (Array.isArray(node)) {
-            node.forEach(item => extractDirect(item));
+            node.forEach(item => extractFromObj(item));
           } else {
             for (let key in node) {
               const val = node[key];
               if (typeof val === 'object' && val !== null) {
                 const nameCandidate = val.name || val.heroName || val.hero || (typeof val === 'string' ? val : null);
-                
                 if (nameCandidate && typeof nameCandidate === 'string') {
                   const matched = HERO_LOOKUP.get(nameCandidate.toLowerCase());
                   if (matched && matched.toLowerCase() !== hero.toLowerCase()) {
@@ -135,22 +141,38 @@ module.exports = async (req, res) => {
                     });
                   }
                 }
-                extractDirect(val);
+                extractFromObj(val);
               }
             }
           }
         };
 
-        extractDirect(nextData?.props?.pageProps || nextData);
+        // Si encontramos el nodo de "byLane", extraemos preferentemente de allí
+        if (laneDataNode) {
+          extractFromObj(laneDataNode);
+        }
+
+        // Si no se encontró o devolvió vacío, extraer del objeto general
+        if (extractedCounters.length === 0) {
+          extractFromObj(pageProps || nextData);
+        }
+
       } catch (err) {
         console.warn("Error leyendo JSON estático:", err.message);
       }
     }
 
+    // Respaldar con parseo del HTML de la sección "BY LANE AND ROLE" si no extrajo del JSON
     if (extractedCounters.length === 0) {
-      $('nav, header, footer, [class*="nav"], [class*="header"]').remove();
+      $('nav, header, footer').remove();
 
-      $('main, div#__next, body').find('tr, li, div, a').each((i, el) => {
+      // Buscar el contenedor que sigue al título "BY LANE AND ROLE"
+      let laneSection = $('*:contains("BY LANE AND ROLE")').last().closest('div, section');
+      if (laneSection.length === 0) {
+        laneSection = $('main, body');
+      }
+
+      laneSection.find('tr, li, div, a').each((i, el) => {
         const text = $(el).text().trim();
         const winRateMatch = text.match(/(\d{2}\.\d{1,2}%)/);
 
@@ -169,7 +191,7 @@ module.exports = async (req, res) => {
       });
     }
 
-    // 2. Limpieza de duplicados
+    // Limpieza de duplicados preservando el orden en que se encontraron
     const uniqueCounters = [];
     const seen = new Set();
     for (const item of extractedCounters) {
@@ -180,11 +202,22 @@ module.exports = async (req, res) => {
       }
     }
 
-    // 3. Filtrar por la línea solicitada si se envió el parámetro `lane`
     let finalCounters = uniqueCounters;
+
+    // Si se especificó una línea, ordenamos y filtramos basándonos en la prioridad definida por la línea
     if (selectedLane && HEROES_BY_LANE[selectedLane]) {
-      const allowedInLane = new Set(HEROES_BY_LANE[selectedLane].map(h => h.toLowerCase()));
-      finalCounters = uniqueCounters.filter(item => allowedInLane.has(item.name.toLowerCase()));
+      const lanePriorityList = HEROES_BY_LANE[selectedLane].map(h => h.toLowerCase());
+      const allowedInLane = new Set(lanePriorityList);
+
+      // Filtrar solo los pertenecientes a la línea
+      const filtered = uniqueCounters.filter(item => allowedInLane.has(item.name.toLowerCase()));
+
+      // Ordenar respetando exactamente la prioridad definida para esa línea (ej: Lukas primero, Barats segundo)
+      finalCounters = filtered.sort((a, b) => {
+        const indexA = lanePriorityList.indexOf(a.name.toLowerCase());
+        const indexB = lanePriorityList.indexOf(b.name.toLowerCase());
+        return (indexA === -1 ? 999 : indexA) - (indexB === -1 ? 999 : indexB);
+      });
     }
 
     if (finalCounters.length > 0) {
