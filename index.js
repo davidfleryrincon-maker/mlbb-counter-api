@@ -1,12 +1,13 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 
+// LISTA OFICIAL BASE DE RESPALDO (Se actualiza dinámicamente desde mlbbhub.com/counter)
 const OFFICIAL_HEROES = [
   "Aamon", "Akai", "Aldous", "Alice", "Alpha", "Alucard", "Angela", "Argus", "Arlott", "Atlas", "Aurora",
   "Badang", "Balmond", "Barats", "Baxia", "Beatrix", "Belerick", "Benedetta", "Brody", "Bruno",
   "Carmilla", "Cecilion", "Chang'e", "Chip", "Chou", "Cici", "Claude", "Clint", "Cyclops",
   "Diggie", "Dyrroth", "Edith", "Esmeralda", "Estes", "Eudora", "Faramis", "Fanny", "Floryn", "Franco", "Fredrinn", "Freya",
-  "Gatotkaca", "Gloom", "Gord", "Grock", "Gusion", "Hanabi", "Hanzo", "Harith", "Harley", "Hayabusa", "Helcurt", "Hilda", "Hylos",
+  "Gatotkaca", "Gloom", "Gord", "Grock", "Gusion", "Hanabi", "Hanzo", "Harith", "Harley", "Hayabusa", "Helcurt", "Hilda", "Hirara", "Hylos",
   "Irithel", "Ixia", "Johnson", "Joy", "Julian", "Kadita", "Kagura", "Kaja", "Karina", "Karrie", "Khaleed", "Khufra", "Kimmy",
   "Lancelot", "Lapu-Lapu", "Layla", "Leomord", "Lesley", "Ling", "Lolita", "Lukas", "Lunox", "Lylia",
   "Martis", "Masha", "Mathilda", "Melissa", "Miya", "Minotaur", "Minsitthar", "Moskov",
@@ -15,12 +16,13 @@ const OFFICIAL_HEROES = [
   "Uranus", "Vale", "Valir", "Valentina", "Vexana", "Wanwan", "Xavier", "X.Borg", "Yin", "Yi Sun-shin", "Yu Zhong", "Yve", "Zhask", "Zhuxin", "Zilong"
 ];
 
-// DICCIONARIO DE ALIAS/SLUGS (Resuelve discordancias como Suyou vs Suyu, Kaela vs Calea, etc.)
+// DICCIONARIO DE ALIAS/SLUGS (Resuelve discordancias de tipeo y nombres)
 const HERO_ALIASES = {
   "suyou": { name: "Suyou", slug: "suyu" },
   "suyu": { name: "Suyou", slug: "suyu" },
   "kaela": { name: "Kaela", slug: "kaela" },
   "calea": { name: "Kaela", slug: "kaela" },
+  "hirara": { name: "Hirara", slug: "hirara" },
   "minotauro": { name: "Minotaur", slug: "minotaur" },
   "minotaur": { name: "Minotaur", slug: "minotaur" },
   "popol": { name: "Popol and Kupa", slug: "popol-and-kupa" }
@@ -47,12 +49,12 @@ const HEROES_BY_LANE = {
   mid: [
     "Valentina", "Lylia", "Kadita", "Xavier", "Lunox", "Zhuxin", "Cecilion", "Chang'e", "Cyclops",
     "Eudora", "Gord", "Harith", "Kagura", "Nana", "Novaria", "Odette", "Pharsa", "Vale",
-    "Valir", "Vexana", "Yve", "Zhask"
+    "Valir", "Vexana", "Yve", "Zhask", "Faramis"
   ],
   roam: [
     "Diggie", "Khufra", "Mathilda", "Chip", "Ruby", "Kaja", "Angela", "Atlas", "Belerick",
     "Carmilla", "Estes", "Faramis", "Floryn", "Franco", "Gloom", "Hylos", "Johnson", "Lolita",
-    "Minotaur", "Rafaela", "Tigreal"
+    "Minotaur", "Rafaela", "Tigreal", "Hilda"
   ]
 };
 
@@ -60,7 +62,7 @@ function resolveHeroNameAndSlug(heroInput) {
   if (!heroInput) return { officialName: '', slug: '' };
   const cleanInput = heroInput.toLowerCase().trim();
 
-  // Si existe en la tabla de alias explícitos
+  // 1. Si existe en la tabla de alias explícitos
   if (HERO_ALIASES[cleanInput]) {
     return {
       officialName: HERO_ALIASES[cleanInput].name,
@@ -68,7 +70,7 @@ function resolveHeroNameAndSlug(heroInput) {
     };
   }
 
-  // Búsqueda en la lista oficial
+  // 2. Búsqueda en la lista oficial
   const matched = HERO_LOOKUP.get(cleanInput);
   const officialName = matched || heroInput;
   const slug = officialName.toLowerCase().trim().replace(/'/g, '').replace(/\./g, '').replace(/\s+/g, '-').replace(/[^a-z0-9\-]/g, '');
@@ -87,6 +89,52 @@ function normalizeLane(lane) {
   return l;
 }
 
+// OBTENER LA LISTA DE HÉROES EN VIVO DESDE EL SELECTOR DE MLBB HUB
+async function fetchLiveHeroesFromMLBBHub() {
+  try {
+    const res = await axios.get('https://mlbbhub.com/counter', {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9'
+      },
+      timeout: 6000
+    });
+
+    const $ = cheerio.load(res.data);
+    const extractedSet = new Set(OFFICIAL_HEROES);
+
+    // Extraer de las opciones del selector (SELECT ENEMY HERO)
+    $('select option').each((i, el) => {
+      const val = $(el).text().trim();
+      if (val && val.length > 1 && !val.toLowerCase().includes('select')) {
+        extractedSet.add(val);
+      }
+    });
+
+    // Extraer del script de Next.js si existe
+    const nextDataScript = $('#__NEXT_DATA__').html();
+    if (nextDataScript) {
+      try {
+        const nextData = JSON.parse(nextDataScript);
+        const heroesList = nextData?.props?.pageProps?.heroes || nextData?.props?.pageProps?.allHeroes;
+        if (Array.isArray(heroesList)) {
+          heroesList.forEach(h => {
+            const hName = h.name || h.heroName || h;
+            if (typeof hName === 'string') extractedSet.add(hName);
+          });
+        }
+      } catch (e) {
+        // Ignorar si falla el JSON
+      }
+    }
+
+    return Array.from(extractedSet);
+  } catch (err) {
+    console.warn("No se pudo obtener la lista en vivo de MLBB Hub, usando lista local:", err.message);
+    return OFFICIAL_HEROES;
+  }
+}
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -97,8 +145,10 @@ module.exports = async (req, res) => {
 
   const { hero, lane, getHeroes } = req.query;
 
+  // Endpoint para enviar la lista actualizada al frontend
   if (getHeroes === 'true') {
-    return res.status(200).json({ heroes: OFFICIAL_HEROES });
+    const liveHeroes = await fetchLiveHeroesFromMLBBHub();
+    return res.status(200).json({ heroes: liveHeroes });
   }
 
   if (!hero) {
@@ -121,7 +171,6 @@ module.exports = async (req, res) => {
         timeout: 9000
       });
     } catch (fetchErr) {
-      // Si con el slug primario da 404 y se buscaba Suyou/Suyu, intenta con el alternativo
       if (heroSlug === 'suyu') {
         const altUrl = `https://mlbbhub.com/counter/suyou`;
         response = await axios.get(altUrl, {
@@ -181,7 +230,7 @@ module.exports = async (req, res) => {
       }
     }
 
-    // --- ESTRATEGIA 2: Scraping HTML de Resguardo (Fallback Si JSON falla) ---
+    // --- ESTRATEGIA 2: Scraping HTML de Resguardo ---
     if (extractedCounters.length === 0) {
       $('[class*="counter"], [class*="card"], [class*="hero-row"], a[href*="/counter/"]').each((i, el) => {
         const text = $(el).text().trim();
@@ -190,7 +239,6 @@ module.exports = async (req, res) => {
         OFFICIAL_HEROES.forEach(hName => {
           if (hName.toLowerCase() !== officialName.toLowerCase()) {
             if (text.toLowerCase().includes(hName.toLowerCase()) || href.includes(formatSlug(hName))) {
-              // Buscar porcentaje en texto cercano
               const wrMatch = text.match(/(\d{2}(\.\d+)?%)/);
               extractedCounters.push({
                 name: hName,
@@ -203,7 +251,7 @@ module.exports = async (req, res) => {
       });
     }
 
-    // Limpieza de duplicados preservando la primera coincidencia
+    // Limpieza de duplicados
     const uniqueCounters = [];
     const seen = new Set();
     for (const item of extractedCounters) {
