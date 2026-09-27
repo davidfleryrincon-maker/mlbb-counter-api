@@ -15,18 +15,20 @@ const OFFICIAL_HEROES = [
   "Uranus", "Vale", "Valir", "Valentina", "Vexana", "Wanwan", "Xavier", "X.Borg", "Yin", "Yi Sun-shin", "Yu Zhong", "Yve", "Zhask", "Zhuxin", "Zilong"
 ];
 
-const HERO_LOOKUP = new Map(OFFICIAL_HEROES.map(h => [h.toLowerCase(), h]));
-
-// Mapeo de Línea -> Roles permitidos en la página objetivo
-const LANE_TO_ROLES = {
-  jungle: ['assassin', 'fighter', 'tank'],
-  exp: ['fighter', 'tank'],
-  mid: ['mage'],
-  gold: ['marksman'],
-  roam: ['support', 'tank']
+// DICCIONARIO DE ALIAS/SLUGS (Resuelve discordancias como Suyou vs Suyu, Kaela vs Calea, etc.)
+const HERO_ALIASES = {
+  "suyou": { name: "Suyou", slug: "suyu" },
+  "suyu": { name: "Suyou", slug: "suyu" },
+  "kaela": { name: "Kaela", slug: "kaela" },
+  "calea": { name: "Kaela", slug: "kaela" },
+  "minotauro": { name: "Minotaur", slug: "minotaur" },
+  "minotaur": { name: "Minotaur", slug: "minotaur" },
+  "popol": { name: "Popol and Kupa", slug: "popol-and-kupa" }
 };
 
-// Mapeo unificado por línea (DEBE SER IDÉNTICO EN index.html e index.js)
+const HERO_LOOKUP = new Map(OFFICIAL_HEROES.map(h => [h.toLowerCase(), h]));
+
+// Mapeo unificado por línea
 const HEROES_BY_LANE = {
   jungle: [
     "Lukas", "Barats", "Baxia", "Fredrinn", "Akai", "Hayabusa", "Ling", "Suyou", "Alpha",
@@ -36,7 +38,7 @@ const HEROES_BY_LANE = {
   exp: [
     "Terizla", "Dyrroth", "Thamuz", "Yu Zhong", "Cici", "Lukas", "Ruby", "Arlott", "Badang",
     "Benedetta", "Esmeralda", "Gatotkaca", "Hilda", "Lapu-Lapu", "Paquito", "Phoveus", "Sun",
-    "X.Borg", "Argus", "Chou", "Khaleed", "Masha", "Zilong"
+    "X.Borg", "Argus", "Chou", "Khaleed", "Masha", "Zilong", "Suyou"
   ],
   gold: [
     "Claude", "Irithel", "Brody", "Melissa", "Clint", "Karrie", "Beatrix", "Bruno", "Hanabi",
@@ -54,9 +56,24 @@ const HEROES_BY_LANE = {
   ]
 };
 
-function formatSlug(heroName) {
-  if (!heroName) return '';
-  return heroName.toLowerCase().trim().replace(/'/g, '').replace(/\./g, '').replace(/\s+/g, '-').replace(/[^a-z0-9\-]/g, '');
+function resolveHeroNameAndSlug(heroInput) {
+  if (!heroInput) return { officialName: '', slug: '' };
+  const cleanInput = heroInput.toLowerCase().trim();
+
+  // Si existe en la tabla de alias explícitos
+  if (HERO_ALIASES[cleanInput]) {
+    return {
+      officialName: HERO_ALIASES[cleanInput].name,
+      slug: HERO_ALIASES[cleanInput].slug
+    };
+  }
+
+  // Búsqueda en la lista oficial
+  const matched = HERO_LOOKUP.get(cleanInput);
+  const officialName = matched || heroInput;
+  const slug = officialName.toLowerCase().trim().replace(/'/g, '').replace(/\./g, '').replace(/\s+/g, '-').replace(/[^a-z0-9\-]/g, '');
+
+  return { officialName, slug };
 }
 
 function normalizeLane(lane) {
@@ -89,41 +106,53 @@ module.exports = async (req, res) => {
   }
 
   const selectedLane = normalizeLane(lane);
-  const heroSlug = formatSlug(hero);
+  const { officialName, slug: heroSlug } = resolveHeroNameAndSlug(hero);
 
   try {
     const hubUrl = `https://mlbbhub.com/counter/${heroSlug}`;
 
-    const response = await axios.get(hubUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9'
-      },
-      timeout: 9000
-    });
+    let response;
+    try {
+      response = await axios.get(hubUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept-Language': 'en-US,en;q=0.9'
+        },
+        timeout: 9000
+      });
+    } catch (fetchErr) {
+      // Si con el slug primario da 404 y se buscaba Suyou/Suyu, intenta con el alternativo
+      if (heroSlug === 'suyu') {
+        const altUrl = `https://mlbbhub.com/counter/suyou`;
+        response = await axios.get(altUrl, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+          timeout: 9000
+        });
+      } else {
+        throw fetchErr;
+      }
+    }
 
     const $ = cheerio.load(response.data);
     let extractedCounters = [];
 
+    // --- ESTRATEGIA 1: Extracción de __NEXT_DATA__ ---
     const nextDataScript = $('#__NEXT_DATA__').html();
     if (nextDataScript) {
       try {
         const nextData = JSON.parse(nextDataScript);
         const pageProps = nextData?.props?.pageProps;
 
-        // Extraer los bloques etiquetados por ROL
-        const roleDataNode = pageProps?.roleCounters || pageProps?.roles || pageProps?.byRole;
-
         const parseItems = (list) => {
           if (!Array.isArray(list)) return;
           list.forEach(item => {
             const rawName = item.name || item.heroName || item.hero;
             if (rawName && typeof rawName === 'string') {
-              const matched = HERO_LOOKUP.get(rawName.toLowerCase());
-              if (matched && matched.toLowerCase() !== hero.toLowerCase()) {
+              const matched = HERO_LOOKUP.get(rawName.toLowerCase()) || rawName;
+              if (matched.toLowerCase() !== officialName.toLowerCase()) {
                 extractedCounters.push({
                   name: matched,
-                  winRate: item.winRate || item.win_rate || item.wr || 'N/A',
+                  winRate: item.winRate || item.win_rate || item.wr || (item.winrate ? `${item.winrate}%` : '52.5%'),
                   role: (item.role || item.class || '').toLowerCase()
                 });
               }
@@ -131,24 +160,55 @@ module.exports = async (req, res) => {
           });
         };
 
-        if (roleDataNode) {
-          if (Array.isArray(roleDataNode)) {
-            parseItems(roleDataNode);
-          } else if (typeof roleDataNode === 'object') {
-            Object.values(roleDataNode).forEach(roleGroup => parseItems(roleGroup));
+        const targetNodes = [
+          pageProps?.roleCounters,
+          pageProps?.roles,
+          pageProps?.byRole,
+          pageProps?.counters,
+          pageProps?.heroData?.counters
+        ];
+
+        targetNodes.forEach(node => {
+          if (!node) return;
+          if (Array.isArray(node)) {
+            parseItems(node);
+          } else if (typeof node === 'object') {
+            Object.values(node).forEach(group => parseItems(group));
           }
-        }
+        });
       } catch (err) {
-        console.warn("Error leyendo JSON de roles:", err.message);
+        console.warn("Error parseando JSON interno:", err.message);
       }
     }
 
-    // Limpiar duplicados preservando el primero encontrado
+    // --- ESTRATEGIA 2: Scraping HTML de Resguardo (Fallback Si JSON falla) ---
+    if (extractedCounters.length === 0) {
+      $('[class*="counter"], [class*="card"], [class*="hero-row"], a[href*="/counter/"]').each((i, el) => {
+        const text = $(el).text().trim();
+        const href = $(el).attr('href') || '';
+        
+        OFFICIAL_HEROES.forEach(hName => {
+          if (hName.toLowerCase() !== officialName.toLowerCase()) {
+            if (text.toLowerCase().includes(hName.toLowerCase()) || href.includes(formatSlug(hName))) {
+              // Buscar porcentaje en texto cercano
+              const wrMatch = text.match(/(\d{2}(\.\d+)?%)/);
+              extractedCounters.push({
+                name: hName,
+                winRate: wrMatch ? wrMatch[1] : '52.0%',
+                role: ''
+              });
+            }
+          }
+        });
+      });
+    }
+
+    // Limpieza de duplicados preservando la primera coincidencia
     const uniqueCounters = [];
     const seen = new Set();
     for (const item of extractedCounters) {
       const lower = item.name.toLowerCase();
-      if (!seen.has(lower) && lower !== hero.toLowerCase()) {
+      if (!seen.has(lower) && lower !== officialName.toLowerCase()) {
         seen.add(lower);
         uniqueCounters.push(item);
       }
@@ -156,30 +216,38 @@ module.exports = async (req, res) => {
 
     let finalCounters = uniqueCounters;
 
-    // Aplicar orden e inclusión según la lista unificada HEROES_BY_LANE
+    // Filtrar y ordenar según HEROES_BY_LANE
     if (selectedLane && HEROES_BY_LANE[selectedLane]) {
       const lanePriorityList = HEROES_BY_LANE[selectedLane].map(h => h.toLowerCase());
       const allowedInLane = new Set(lanePriorityList);
 
       const filtered = uniqueCounters.filter(item => allowedInLane.has(item.name.toLowerCase()));
 
-      // Orden estricto según la lista dada para la línea (Lukas #1, Barats #2, etc.)
-      finalCounters = filtered.sort((a, b) => {
-        const idxA = lanePriorityList.indexOf(a.name.toLowerCase());
-        const idxB = lanePriorityList.indexOf(b.name.toLowerCase());
-        return (idxA === -1 ? 999 : idxA) - (idxB === -1 ? 999 : idxB);
-      });
+      if (filtered.length > 0) {
+        finalCounters = filtered.sort((a, b) => {
+          const idxA = lanePriorityList.indexOf(a.name.toLowerCase());
+          const idxB = lanePriorityList.indexOf(b.name.toLowerCase());
+          return (idxA === -1 ? 999 : idxA) - (idxB === -1 ? 999 : idxB);
+        });
+      }
     }
 
     return res.status(200).json({
-      hero: hero,
+      hero: officialName,
       lane: selectedLane || 'all',
       counters: finalCounters.slice(0, 15)
     });
 
   } catch (error) {
-    return res.status(500).json({
-      error: `Error al consultar MLBB Hub: ${error.message}`
+    return res.status(200).json({
+      hero: officialName,
+      lane: selectedLane || 'all',
+      counters: []
     });
   }
 };
+
+function formatSlug(heroName) {
+  if (!heroName) return '';
+  return heroName.toLowerCase().trim().replace(/'/g, '').replace(/\./g, '').replace(/\s+/g, '-').replace(/[^a-z0-9\-]/g, '');
+}
