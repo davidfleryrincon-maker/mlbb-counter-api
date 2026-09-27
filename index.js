@@ -1,7 +1,7 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 
-// Lista global de héroes oficiales de MLBB para validación estricta de nombres
+// Lista global oficial solo para evitar que se cuelen textos de menús o botones
 const OFFICIAL_HEROES = [
   "Aamon", "Akai", "Aldous", "Alice", "Alpha", "Alucard", "Angela", "Argus", "Arlott", "Atlas", "Aurora",
   "Badang", "Balmond", "Barats", "Baxia", "Beatrix", "Belerick", "Benedetta", "Brody", "Bruno",
@@ -16,7 +16,6 @@ const OFFICIAL_HEROES = [
   "Uranus", "Vale", "Valir", "Valentina", "Vexana", "Wanwan", "Xavier", "X.Borg", "Yin", "Yi Sun-shin", "Yu Zhong", "Yve", "Zhask", "Zhuxin", "Zilong"
 ];
 
-// Map para búsqueda rápida e insensible a mayúsculas
 const HERO_LOOKUP = new Map(OFFICIAL_HEROES.map(h => [h.toLowerCase(), h]));
 
 function formatSlug(heroName) {
@@ -30,19 +29,7 @@ function formatSlug(heroName) {
     .replace(/[^a-z0-9\-]/g, '');
 }
 
-function normalizeLane(lane) {
-  if (!lane) return '';
-  const l = lane.toLowerCase().trim();
-  if (l.includes('exp')) return 'exp';
-  if (l.includes('gold')) return 'gold';
-  if (l.includes('mid')) return 'mid';
-  if (l.includes('jungle') || l.includes('jungla')) return 'jungle';
-  if (l.includes('roam') || l.includes('roma')) return 'roam';
-  return l;
-}
-
 module.exports = async (req, res) => {
-  // Headers CORS
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
@@ -55,7 +42,7 @@ module.exports = async (req, res) => {
     return res.status(200).end();
   }
 
-  const { hero, lane, getHeroes } = req.query;
+  const { hero, getHeroes } = req.query;
 
   if (getHeroes === 'true') {
     return res.status(200).json({ heroes: OFFICIAL_HEROES });
@@ -65,7 +52,6 @@ module.exports = async (req, res) => {
     return res.status(400).json({ error: "Falta el parámetro 'hero'" });
   }
 
-  const targetLane = normalizeLane(lane);
   const heroSlug = formatSlug(hero);
 
   try {
@@ -82,69 +68,50 @@ module.exports = async (req, res) => {
     const $ = cheerio.load(response.data);
     let extractedCounters = [];
 
-    // Extraer desde la hidratación JSON de Next.js (__NEXT_DATA__)
+    // 1. Extraer directo del JSON de la página
     const nextDataScript = $('#__NEXT_DATA__').html();
     
     if (nextDataScript) {
       try {
         const nextData = JSON.parse(nextDataScript);
         
-        // Recorrer el objeto JSON buscando las secciones de "byLane", "laneCounters" o "roles"
-        const scanForLaneSection = (node, currentContext = '') => {
+        const extractDirect = (node) => {
           if (!node || typeof node !== 'object') return;
 
           if (Array.isArray(node)) {
-            node.forEach(item => scanForLaneSection(item, currentContext));
+            node.forEach(item => extractDirect(item));
           } else {
             for (let key in node) {
-              const keyLower = key.toLowerCase();
-              const isLaneKey = targetLane ? keyLower.includes(targetLane) : true;
-              
-              // Verificar si el valor contiene héroes y porcentaje de winrate
               const val = node[key];
               if (typeof val === 'object' && val !== null) {
-                const possibleName = val.name || val.heroName || val.hero || (typeof val === 'string' ? val : null);
+                const nameCandidate = val.name || val.heroName || val.hero || (typeof val === 'string' ? val : null);
                 
-                if (possibleName && typeof possibleName === 'string') {
-                  const matched = HERO_LOOKUP.get(possibleName.toLowerCase());
+                if (nameCandidate && typeof nameCandidate === 'string') {
+                  const matched = HERO_LOOKUP.get(nameCandidate.toLowerCase());
                   if (matched && matched.toLowerCase() !== hero.toLowerCase()) {
-                    // Si estamos filtrando línea, validar si el contexto o la clave contiene la línea
-                    if (!targetLane || isLaneKey || currentContext.includes(targetLane)) {
-                      extractedCounters.push({
-                        name: matched,
-                        winRate: val.winRate || val.win_rate || val.wr || '52.5%'
-                      });
-                    }
+                    extractedCounters.push({
+                      name: matched,
+                      winRate: val.winRate || val.win_rate || val.wr || 'N/A'
+                    });
                   }
                 }
-                scanForLaneSection(val, `${currentContext}_${keyLower}`);
+                extractDirect(val);
               }
             }
           }
         };
 
-        scanForLaneSection(nextData?.props?.pageProps || nextData);
+        extractDirect(nextData?.props?.pageProps || nextData);
       } catch (err) {
-        console.warn("Error parseando __NEXT_DATA__:", err.message);
+        console.warn("Error leyendo JSON estático:", err.message);
       }
     }
 
-    // Si la inspección de __NEXT_DATA__ no atrapó la sección por parsing,
-    // hacer scraping focalizado en bloques HTML excluyendo menus y navbars
+    // 2. Extraer directo del HTML del body (limpiando menús)
     if (extractedCounters.length === 0) {
       $('nav, header, footer, [class*="nav"], [class*="header"]').remove();
 
-      // Buscar bloques que contengan la frase "BY LANE" o "LANE AND ROLE"
-      let $targetSection =$('*').filter((i, el) => {
-        const txt = $(el).text().toUpperCase();
-        return txt.includes('BY LANE AND ROLE') || txt.includes('BY LANE');
-      }).last();
-
-      if ($targetSection.length === 0) {
-        $targetSection =$('main, div#__next, body');
-      }
-
-      $targetSection.find('tr, li, div').each((i, el) => {
+      $('main, div#__next, body').find('tr, li, div, a').each((i, el) => {
         const text = $(el).text().trim();
         const winRateMatch = text.match(/(\d{2}\.\d{1,2}%)/);
 
@@ -153,20 +120,17 @@ module.exports = async (req, res) => {
 
           const regex = new RegExp(`\\b${lowerHero.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
           if (regex.test(text)) {
-            // Si el usuario especificó línea, verificar si el bloque contiene la línea solicitada
-            if (!targetLane || text.toLowerCase().includes(targetLane)) {
-              extractedCounters.push({
-                name: officialName,
-                winRate: winRateMatch ? winRateMatch[1] : '52.5%'
-              });
-              break;
-            }
+            extractedCounters.push({
+              name: officialName,
+              winRate: winRateMatch ? winRateMatch[1] : 'N/A'
+            });
+            break;
           }
         }
       });
     }
 
-    // Filtrar duplicados preservando orden
+    // Limpieza de duplicados simple manteniéndolos en el orden que venían de la página
     const uniqueCounters = [];
     const seen = new Set();
     for (const item of extractedCounters) {
@@ -180,63 +144,15 @@ module.exports = async (req, res) => {
     if (uniqueCounters.length > 0) {
       return res.status(200).json({
         hero: hero,
-        lane: targetLane || 'all',
-        counters: uniqueCounters.slice(0, 15)
+        counters: uniqueCounters
       });
     }
 
-    throw new Error("No se encontraron registros en la sección BY LANE AND ROLE");
+    return res.status(404).json({ error: `No se encontraron counters para ${hero}` });
 
   } catch (error) {
-    console.warn(`[Fallback activo para ${hero} en sección BY LANE AND ROLE]:`, error.message);
-
-    // Mapeo dinámico directo basado en los datos exactos registrados en "BY LANE AND ROLE" en MLBB Hub
-    const laneData = {
-      exp: [
-        { name: "Terizla", winRate: "54.80%" },
-        { name: "Dyrroth", winRate: "54.20%" },
-        { name: "Thamuz", winRate: "53.50%" },
-        { name: "Yu Zhong", winRate: "53.10%" },
-        { name: "Cici", winRate: "52.60%" }
-      ],
-      gold: [
-        { name: "Claude", winRate: "54.10%" },
-        { name: "Irithel", winRate: "53.60%" },
-        { name: "Brody", winRate: "53.00%" },
-        { name: "Melissa", winRate: "52.50%" }
-      ],
-      mid: [
-        { name: "Valentina", winRate: "54.30%" },
-        { name: "Lylia", winRate: "53.80%" },
-        { name: "Kadita", winRate: "53.10%" },
-        { name: "Xavier", winRate: "52.60%" }
-      ],
-      jungle: [
-        { name: "Baxia", winRate: "54.70%" },
-        { name: "Fredrinn", winRate: "54.10%" },
-        { name: "Akai", winRate: "53.30%" },
-        { name: "Hayabusa", winRate: "52.50%" }
-      ],
-      roam: [
-        { name: "Diggie", winRate: "55.40%" },
-        { name: "Khufra", winRate: "53.90%" },
-        { name: "Mathilda", winRate: "53.40%" },
-        { name: "Chip", winRate: "52.80%" }
-      ]
-    };
-
-    const fallbackList = (targetLane && laneData[targetLane]) ? laneData[targetLane] : [
-      { name: "Terizla", winRate: "54.80%" },
-      { name: "Baxia", winRate: "54.70%" },
-      { name: "Valentina", winRate: "54.30%" },
-      { name: "Dyrroth", winRate: "54.20%" },
-      { name: "Diggie", winRate: "53.90%" }
-    ];
-
-    return res.status(200).json({
-      hero: hero,
-      lane: targetLane || 'all',
-      counters: fallbackList.filter(c => c.name.toLowerCase() !== hero.toLowerCase())
+    return res.status(500).json({
+      error: `Error al consultar MLBB Hub: ${error.message}`
     });
   }
 };
