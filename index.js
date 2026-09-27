@@ -1,7 +1,7 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 
-// Lista global oficial solo para evitar que se cuelen textos de menús o botones
+// Lista global de héroes oficiales
 const OFFICIAL_HEROES = [
   "Aamon", "Akai", "Aldous", "Alice", "Alpha", "Alucard", "Angela", "Argus", "Arlott", "Atlas", "Aurora",
   "Badang", "Balmond", "Barats", "Baxia", "Beatrix", "Belerick", "Benedetta", "Brody", "Bruno",
@@ -18,6 +18,34 @@ const OFFICIAL_HEROES = [
 
 const HERO_LOOKUP = new Map(OFFICIAL_HEROES.map(h => [h.toLowerCase(), h]));
 
+// Mapeo oficial de héroes permitidos por cada línea (usado SOLO para filtrar el resultado final)
+const HEROES_BY_LANE = {
+  jungle: [
+    "Lukas", "Barats", "Baxia", "Fredrinn", "Akai", "Hayabusa", "Ling", "Suyou", "Alpha",
+    "Alucard", "Aamon", "Fanny", "Gusion", "Lancelot", "Helcurt", "Hanzo", "Karina", "Martis",
+    "Nolan", "Joy", "Julian", "Harley", "Yi Sun-shin", "Saber", "Yin"
+  ],
+  exp: [
+    "Terizla", "Dyrroth", "Thamuz", "Yu Zhong", "Cici", "Lukas", "Ruby", "Arlott", "Badang",
+    "Benedetta", "Esmeralda", "Gatotkaca", "Hilda", "Lapu-Lapu", "Paquito", "Phoveus", "Sun",
+    "X.Borg", "Argus", "Chou", "Khaleed", "Masha", "Zilong"
+  ],
+  gold: [
+    "Claude", "Irithel", "Brody", "Melissa", "Clint", "Karrie", "Beatrix", "Bruno", "Hanabi",
+    "Ixia", "Layla", "Lesley", "Miya", "Moskov", "Natan", "Popol and Kupa", "Wanwan"
+  ],
+  mid: [
+    "Valentina", "Lylia", "Kadita", "Xavier", "Lunox", "Zhuxin", "Cecilion", "Chang'e", "Cyclops",
+    "Eudora", "Gord", "Harith", "Kagura", "Nana", "Novaria", "Odette", "Pharsa", "Vale",
+    "Valir", "Vexana", "Yve", "Zhask"
+  ],
+  roam: [
+    "Diggie", "Khufra", "Mathilda", "Chip", "Ruby", "Kaja", "Angela", "Atlas", "Belerick",
+    "Carmilla", "Estes", "Faramis", "Floryn", "Franco", "Gloom", "Hylos", "Johnson", "Lolita",
+    "Minotaur", "Rafaela", "Tigreal"
+  ]
+};
+
 function formatSlug(heroName) {
   if (!heroName) return '';
   return heroName
@@ -27,6 +55,17 @@ function formatSlug(heroName) {
     .replace(/\./g, '')
     .replace(/\s+/g, '-')
     .replace(/[^a-z0-9\-]/g, '');
+}
+
+function normalizeLane(lane) {
+  if (!lane) return '';
+  const l = lane.toLowerCase().trim();
+  if (l.includes('exp')) return 'exp';
+  if (l.includes('gold')) return 'gold';
+  if (l.includes('mid')) return 'mid';
+  if (l.includes('jungle') || l.includes('jungla')) return 'jungle';
+  if (l.includes('roam') || l.includes('roma')) return 'roam';
+  return l;
 }
 
 module.exports = async (req, res) => {
@@ -42,7 +81,7 @@ module.exports = async (req, res) => {
     return res.status(200).end();
   }
 
-  const { hero, getHeroes } = req.query;
+  const { hero, lane, getHeroes } = req.query;
 
   if (getHeroes === 'true') {
     return res.status(200).json({ heroes: OFFICIAL_HEROES });
@@ -52,6 +91,7 @@ module.exports = async (req, res) => {
     return res.status(400).json({ error: "Falta el parámetro 'hero'" });
   }
 
+  const selectedLane = normalizeLane(lane);
   const heroSlug = formatSlug(hero);
 
   try {
@@ -68,7 +108,7 @@ module.exports = async (req, res) => {
     const $ = cheerio.load(response.data);
     let extractedCounters = [];
 
-    // 1. Extraer directo del JSON de la página
+    // 1. Extraer todos los candidatos a counter desde la estructura del sitio
     const nextDataScript = $('#__NEXT_DATA__').html();
     
     if (nextDataScript) {
@@ -107,7 +147,6 @@ module.exports = async (req, res) => {
       }
     }
 
-    // 2. Extraer directo del HTML del body (limpiando menús)
     if (extractedCounters.length === 0) {
       $('nav, header, footer, [class*="nav"], [class*="header"]').remove();
 
@@ -130,7 +169,7 @@ module.exports = async (req, res) => {
       });
     }
 
-    // Limpieza de duplicados simple manteniéndolos en el orden que venían de la página
+    // 2. Limpieza de duplicados
     const uniqueCounters = [];
     const seen = new Set();
     for (const item of extractedCounters) {
@@ -141,14 +180,22 @@ module.exports = async (req, res) => {
       }
     }
 
-    if (uniqueCounters.length > 0) {
+    // 3. Filtrar por la línea solicitada si se envió el parámetro `lane`
+    let finalCounters = uniqueCounters;
+    if (selectedLane && HEROES_BY_LANE[selectedLane]) {
+      const allowedInLane = new Set(HEROES_BY_LANE[selectedLane].map(h => h.toLowerCase()));
+      finalCounters = uniqueCounters.filter(item => allowedInLane.has(item.name.toLowerCase()));
+    }
+
+    if (finalCounters.length > 0) {
       return res.status(200).json({
         hero: hero,
-        counters: uniqueCounters
+        lane: selectedLane || 'all',
+        counters: finalCounters.slice(0, 15)
       });
     }
 
-    return res.status(404).json({ error: `No se encontraron counters para ${hero}` });
+    return res.status(404).json({ error: `No se encontraron counters para ${hero} en la línea ${selectedLane}` });
 
   } catch (error) {
     return res.status(500).json({
