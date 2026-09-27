@@ -1,7 +1,6 @@
 import { load } from 'cheerio';
 
 export default async function handler(req, res) {
-  // Configuración de cabeceras CORS para permitir peticiones desde tu frontend
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -14,11 +13,10 @@ export default async function handler(req, res) {
     const heroInput = req.query.hero || 'miya';
     const laneInput = (req.query.lane || 'gold').toLowerCase().trim();
 
-    // Normalizar el slug del héroe para la URL de MLBB Hub (ej. "popol and kupa" -> "popol-and-kupa")
+    // Normalizar slug para la URL (ej: "popol-and-kupa")
     const heroSlug = heroInput.toLowerCase().trim().replace(/\s+/g, '-');
     const url = `https://mlbbhub.com/counter/${heroSlug}`;
 
-    // Petición HTTP usando el fetch nativo de Node.js/Vercel
     const response = await fetch(url, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -26,72 +24,41 @@ export default async function handler(req, res) {
     });
 
     if (!response.ok) {
-      return res.status(404).json({ 
-        error: 'Héroe no encontrado en MLBB Hub', 
-        counters: [] 
-      });
+      return res.status(404).json({ error: 'Héroe no encontrado en MLBB Hub', counters: [] });
     }
 
     const html = await response.text();
     const $ = load(html);
-    const counters = [];
+    const rawCounters = [];
 
-    // Mapeo de términos para identificar la línea seleccionada
-    const laneKeywords = {
-      gold: ['gold', 'marksman'],
-      exp: ['exp', 'fighter'],
-      mid: ['mid', 'mage'],
-      jungle: ['jungle', 'jungler', 'assassin'],
-      roam: ['roam', 'roamer', 'tank', 'support']
+    // Función para formatear Slugs a Nombres Propios Limpios (ej: "popol-and-kupa" -> "Popol And Kupa")
+    const formatHeroName = (slug) => {
+      return slug
+        .split('-')
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(' ');
     };
 
-    const targetKeywords = laneKeywords[laneInput] || [laneInput];
-
-    // 1. LOCALIZAR LA SECCIÓN "COUNTERS ... BY LANE AND ROLE"
-    // Buscamos cualquier elemento de texto que contenga "BY LANE AND ROLE"
-    let laneSection = null;
-
-    $('*').each((_, el) => {
-      const text = $(el).text().toUpperCase();
-      if (text.includes('BY LANE AND ROLE') && !laneSection) {
-        // Obtenemos el contenedor padre general de esa sección
-        laneSection = $(el).closest('section, div.container, div, main');
-      }
-    });
-
-    const searchScope = laneSection && laneSection.length > 0 ? laneSection : $.root();
-
-    // 2. BUSCAR EL BLOQUE DE LA LÍNEA SOLICITADA DENTRO DE ESA SECCIÓN
-    let targetBlock = null;
-
-    searchScope.find('div, section, article, table').each((_, block) => {
-      const blockText = $(block).find('h2, h3, h4, h5, header, .title, button').text().toLowerCase();
-      
-      const matchesLane = targetKeywords.some(kw => blockText.includes(kw));
-      if (matchesLane && !targetBlock) {
-        targetBlock = $(block);
-      }
-    });
-
-    const finalScope = targetBlock && targetBlock.length > 0 ? targetBlock : searchScope;
-
-    // 3. EXTRAER LOS NOMBRES Y SLUGS DE LOS HÉROES
-    finalScope.find('a[href*="/hero/"], a[href*="/counter/"]').each((_, el) => {
-      const name = $(el).text().trim();
+    // Extraer únicamente los enlaces que apuntan a perfiles de héroes
+    $('a[href*="/hero/"], a[href*="/counter/"]').each((_, el) => {
       const href = $(el).attr('href') || '';
-      const slug = href.split('/').filter(Boolean).pop();
+      const parts = href.split('/').filter(Boolean);
+      const slug = parts.pop();
 
-      // Validación de filtros para ignorar links genéricos y evitar duplicados
-      if (
-        name && 
-        slug && 
-        slug.toLowerCase() !== heroSlug && 
-        !counters.some(c => c.name.toLowerCase() === name.toLowerCase())
-      ) {
-        const isMenuText = ['view', 'lane', 'role', 'counter', 'tier list', 'guides'].some(term => name.toLowerCase().includes(term));
-        if (!isMenuText && name.length > 2) {
-          counters.push({
-            name: name,
+      // Términos en inglés de la interfaz que debemos ignorar
+      const blacklist = [
+        'hero', 'counter', 'tier-list', 'guides', 'privacy', 'terms', 
+        'contact', 'about', 'gold-lane', 'exp-lane', 'mid-lane', 'jungle', 'roam', heroSlug
+      ];
+
+      if (slug && !blacklist.includes(slug.toLowerCase()) && slug.length > 2) {
+        // Formatear el nombre de forma limpia a partir del slug de la URL
+        const cleanName = formatHeroName(slug);
+
+        // Evitar duplicados
+        if (!rawCounters.some(c => c.slug === slug)) {
+          rawCounters.push({
+            name: cleanName,
             slug: slug,
             winRate: "Counter por línea"
           });
@@ -99,8 +66,9 @@ export default async function handler(req, res) {
       }
     });
 
+    // Retornamos los resultados limpios
     return res.status(200).json({
-      counters: counters.slice(0, 10),
+      counters: rawCounters.slice(0, 10),
       source: url,
       lane: laneInput,
       hero: heroInput
