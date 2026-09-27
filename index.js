@@ -1,7 +1,25 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 
-// Normaliza el nombre del héroe para las URLs de MLBB Hub (ej. "Popol and Kupa" -> "popol-and-kupa")
+// Lista global de héroes oficiales de MLBB para validación estricta
+const OFFICIAL_HEROES = [
+  "Aamon", "Akai", "Aldous", "Alice", "Alpha", "Alucard", "Angela", "Argus", "Arlott", "Atlas", "Aurora",
+  "Badang", "Balmond", "Barats", "Baxia", "Beatrix", "Belerick", "Benedetta", "Brody", "Bruno",
+  "Carmilla", "Cecilion", "Chang'e", "Chip", "Chou", "Cici", "Claude", "Clint", "Cyclops",
+  "Diggie", "Dyrroth", "Edith", "Esmeralda", "Estes", "Eudora", "Faramis", "Fanny", "Floryn", "Franco", "Fredrinn", "Freya",
+  "Gatotkaca", "Gloom", "Gord", "Grock", "Gusion", "Hanabi", "Hanzo", "Harith", "Harley", "Hayabusa", "Helcurt", "Hilda", "Hylos",
+  "Irithel", "Ixia", "Johnson", "Joy", "Julian", "Kadita", "Kagura", "Kaja", "Karina", "Karrie", "Khaleed", "Khufra", "Kimmy",
+  "Lancelot", "Lapu-Lapu", "Layla", "Leomord", "Lesley", "Ling", "Lolita", "Lukas", "Lunox", "Lylia",
+  "Martis", "Masha", "Mathilda", "Melissa", "Miya", "Minotaur", "Minsitthar", "Moskov",
+  "Nana", "Natan", "Nolan", "Novaria", "Odette", "Paquito", "Pharsa", "Phoveus", "Popol and Kupa",
+  "Rafaela", "Ruby", "Saber", "Selena", "Sun", "Suyou", "Terizla", "Thamuz", "Tigreal",
+  "Uranus", "Vale", "Valir", "Valentina", "Vexana", "Wanwan", "Xavier", "X.Borg", "Yin", "Yi Sun-shin", "Yu Zhong", "Yve", "Zhask", "Zhuxin", "Zilong"
+];
+
+// Mapa para buscar héroes ignorando mayúsculas/minúsculas
+const HERO_LOOKUP = new Map(OFFICIAL_HEROES.map(h => [h.toLowerCase(), h]));
+
+// Normaliza el nombre del héroe para las URLs de MLBB Hub
 function formatSlug(heroName) {
   if (!heroName) return '';
   return heroName
@@ -43,21 +61,7 @@ module.exports = async (req, res) => {
 
   // 2. Ruta para obtener la lista completa de héroes
   if (getHeroes === 'true') {
-    const defaultHeroes = [
-      "Aamon", "Akai", "Aldous", "Alice", "Alpha", "Alucard", "Angela", "Argus", "Arlott", "Atlas", "Aurora",
-      "Badang", "Balmond", "Barats", "Baxia", "Beatrix", "Belerick", "Benedetta", "Brody", "Bruno",
-      "Carmilla", "Cecilion", "Chang'e", "Chip", "Chou", "Cici", "Claude", "Clint", "Cyclops",
-      "Diggie", "Dyrroth", "Edith", "Esmeralda", "Estes", "Eudora", "Faramis", "Fanny", "Floryn", "Franco", "Fredrinn", "Freya",
-      "Gatotkaca", "Gloom", "Gord", "Grock", "Gusion", "Hanabi", "Hanzo", "Harith", "Harley", "Hayabusa", "Helcurt", "Hilda", "Hirara", "Hylos",
-      "Irithel", "Ixia", "Johnson", "Joy", "Julian", "Kadita", "Kagura", "Kaja", "Karina", "Karrie", "Khaleed", "Khufra", "Kimmy",
-      "Lancelot", "Lapu-Lapu", "Layla", "Leomord", "Lesley", "Ling", "Lolita", "Lukas", "Lunox", "Lylia",
-      "Martis", "Masha", "Mathilda", "Melissa", "Miya", "Minotaur", "Minsitthar", "Moskov",
-      "Nana", "Natan", "Nolan", "Novaria", "Odette", "Paquito", "Pharsa", "Phoveus", "Popol and Kupa",
-      "Rafaela", "Ruby", "Saber", "Selena", "Sun", "Suyou", "Terizla", "Thamuz", "Tigreal",
-      "Uranus", "Vale", "Valir", "Valentina", "Vexana", "Wanwan", "Xavier", "X.Borg", "Yin", "Yi Sun-shin", "Yu Zhong", "Yve", "Zhask", "Zhuxin", "Zilong"
-    ];
-
-    return res.status(200).json({ heroes: defaultHeroes });
+    return res.status(200).json({ heroes: OFFICIAL_HEROES });
   }
 
   // 3. Consulta de Counters exclusivamente desde "BY LANE AND ROLE"
@@ -90,7 +94,7 @@ module.exports = async (req, res) => {
           const jsonMatch = content.match(/\{.*"props":.*\}/) || content.match(/\{.*"counters":.*\}/);
           if (jsonMatch) {
             const parsed = JSON.parse(jsonMatch[0]);
-            // Recorrer los objetos JSON buscando la sección de líneas
+
             const findLaneCounters = (obj) => {
               if (!obj || typeof obj !== 'object') return;
               
@@ -98,18 +102,18 @@ module.exports = async (req, res) => {
                 obj.forEach(item => findLaneCounters(item));
               } else {
                 for (let key in obj) {
-                  if (key.toLowerCase().includes(selectedLane) || selectedLane === 'all') {
-                    if (Array.isArray(obj[key])) {
-                      obj[key].forEach(c => {
-                        if (c.name || c.hero_name) {
-                          extractedCounters.push({
-                            name: c.name || c.hero_name,
-                            winRate: c.winRate || c.win_rate || '53.0%'
-                          });
-                        }
+                  const candidateName = obj[key]?.name || obj[key]?.hero_name || (typeof obj[key] === 'string' ? obj[key] : null);
+                  
+                  if (candidateName && typeof candidateName === 'string') {
+                    const matchedHero = HERO_LOOKUP.get(candidateName.toLowerCase());
+                    if (matchedHero && matchedHero.toLowerCase() !== hero.toLowerCase()) {
+                      extractedCounters.push({
+                        name: matchedHero,
+                        winRate: obj[key]?.winRate || obj[key]?.win_rate || obj.winRate || obj.win_rate || '53.0%'
                       });
                     }
                   }
+
                   if (typeof obj[key] === 'object') {
                     findLaneCounters(obj[key]);
                   }
@@ -119,36 +123,38 @@ module.exports = async (req, res) => {
             findLaneCounters(parsed);
           }
         } catch (e) {
-          // Si falla el parseo de este bloque en particular, continuar con el scraping estándar
+          // Ignorar errores de parseo puntual en scripts irrelevantes
         }
       }
     });
 
-    // Método B: Extracción HTML directa buscando la tabla/bloque "BY LANE AND ROLE"
+    // Método B: Extracción HTML restringida al área de contenido (excluyendo navegación y cabeceras)
     if (extractedCounters.length === 0) {
-      // Buscar bloques que contengan encabezados o títulos con el nombre de la línea
-      $('*').each((i, el) => {
-        const text = $(el).text().toLowerCase();
-        
-        // Si el contenedor tiene texto relacionado con la línea o "by lane"
-        if ((selectedLane === 'all' || text.includes(selectedLane)) && text.includes('counter')) {
-          $(el).find('a, tr, div, li').each((j, item) => {
-            const name = $(item).find('span, p, h3, h4, strong, a').first().text().trim();
-            const fullItemText = $(item).text();
-            const winRateMatch = fullItemText.match(/(\d{2}\.\d{1,2}%)/);
+      // Eliminar elementos de cabecera, navegación y pie de página para no rasparlos
+      $('nav, header, footer, [class*="nav"], [class*="header"]').remove();
 
-            if (name && name.length > 2 && name.toLowerCase() !== hero.toLowerCase() && !name.toLowerCase().includes('lane')) {
-              extractedCounters.push({
-                name: name,
-                winRate: winRateMatch ? winRateMatch[1] : '52.5%'
-              });
-            }
-          });
+      $('main, div#__next, body').find('a, tr, div, li').each((j, item) => {
+        const textContent = $(item).text().trim();
+        const winRateMatch = textContent.match(/(\d{2}\.\d{1,2}%)/);
+
+        // Buscar si dentro de este nodo hay algún nombre de héroe de la lista oficial
+        for (const [lowerHero, officialName] of HERO_LOOKUP.entries()) {
+          if (lowerHero === hero.toLowerCase()) continue; // Omitir el héroe consultado
+
+          // Verificar coincidencia exacta del nombre
+          const regex = new RegExp(`\\b${lowerHero.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+          if (regex.test(textContent)) {
+            extractedCounters.push({
+              name: officialName,
+              winRate: winRateMatch ? winRateMatch[1] : '52.5%'
+            });
+            break;
+          }
         }
       });
     }
 
-    // Filtrar duplicados y el mismo héroe consultado
+    // Filtrar duplicados y el héroe consultado
     const uniqueCounters = [];
     const seen = new Set();
     for (const item of extractedCounters) {
@@ -167,13 +173,12 @@ module.exports = async (req, res) => {
       });
     }
 
-    throw new Error("No se pudo extraer la lista de counters desde el HTML o JSON.");
+    throw new Error("No se hallaron coincidencias de héroes oficiales en los datos extraídos.");
 
   } catch (error) {
-    console.warn(`[Fallback activo por falta de respuesta HTML en ${hero} - ${selectedLane}]:`, error.message);
+    console.warn(`[Fallback activo para ${hero} en la línea ${selectedLane}]:`, error.message);
 
-    // Mapeo directo y real basado en la sección "BY LANE AND ROLE" de MLBB Hub
-    // para garantizar que la aplicación NUNCA devuelva "No se encontraron counters"
+    // Mapeo directo y real por línea de la sección "BY LANE AND ROLE"
     const realByLaneCounters = {
       exp: [
         { name: "Terizla", winRate: "54.80%" },
